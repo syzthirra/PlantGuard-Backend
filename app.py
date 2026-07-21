@@ -126,29 +126,15 @@ logging.info(f"Last Conv Layer : {LAST_CONV_LAYER}")
 # Build Model Before GradCAM
 #########################################################
 
-dummy = tf.zeros((1, 224, 224, 3))
-
-_ = model(dummy)
-
-#########################################################
-# Build GradCAM Model
-#########################################################
-
-grad_model = tf.keras.models.Model(
-
-   inputs=model.input,
-
-outputs=[
-
-    model.get_layer(LAST_CONV_LAYER).output,
-
-    model.outputs[0]
-
-]
-
-)
-
 def make_gradcam_heatmap(image):
+
+    grad_model = tf.keras.models.Model(
+        inputs=model.input,
+        outputs=[
+            model.get_layer(LAST_CONV_LAYER).output,
+            model.output
+        ]
+    )
 
     with tf.GradientTape() as tape:
 
@@ -181,8 +167,14 @@ def make_gradcam_heatmap(image):
 
     heatmap = heatmap.numpy()
 
-    # Smooth the heatmap
-    heatmap = cv2.GaussianBlur(heatmap, (7,7), 0)
+    heatmap = cv2.GaussianBlur(
+        heatmap,
+        (7, 7),
+        0
+    )
+
+    del grad_model
+    gc.collect()
 
     return heatmap
 
@@ -639,7 +631,9 @@ def predict():
             f"{result['confidence']:.2f}%"
         )
     
-
+        tf.keras.backend.clear_session()
+        gc.collect()
+        
         return jsonify({
 
             "disease": result["disease"],
