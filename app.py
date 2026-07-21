@@ -668,23 +668,8 @@ def predict():
 # Run Flask
 #########################################################
 
-if __name__=="__main__":
+if __name__ == "__main__":
+    import os
 
-    logging.info("--------------------------------")
-
-    logging.info("PlantGuard Backend Started")
- 
-    logging.info(f"Weights : {WEIGHTS_PATH}")
-
-    logging.info(f"GradCAM : {LAST_CONV_LAYER}")
-
-    logging.info("--------------------------------")
-
-    app.run(
-
-        host="0.0.0.0",
-
-        port=5000
-
-    )
-
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
