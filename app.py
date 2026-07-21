@@ -1,0 +1,668 @@
+import os
+import io
+import cv2
+import base64
+import logging
+import numpy as np
+import matplotlib.cm as cm
+import imghdr
+
+from PIL import Image
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import (
+    InputLayer,
+    Conv2D,
+    MaxPooling2D,
+    Flatten,
+    Dense,
+    Dropout
+)
+from tensorflow.keras import Input
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.preprocessing.image import img_to_array
+
+#########################################################
+# Flask Configuration
+#########################################################
+
+app = Flask(__name__)
+CORS(app)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+#########################################################
+# Model Configuration
+#########################################################
+
+
+IMAGE_SIZE = (224,224)
+
+APP_NAME = "PlantGuard"
+
+VERSION = "1.0.0"
+
+AUTHOR = "Syaza Athirah Sanusi"
+
+#########################################################
+# Build CNN Model
+#########################################################
+
+WEIGHTS_PATH = "plantguard_weights.weights.h5"
+
+
+def build_model():
+
+    inputs = Input(shape=(224, 224, 3))
+
+    x = Conv2D(32, (3,3), activation="relu")(inputs)
+    x = MaxPooling2D((2,2))(x)
+
+    x = Conv2D(64, (3,3), activation="relu")(x)
+    x = MaxPooling2D((2,2))(x)
+
+    x = Conv2D(128, (3,3), activation="relu", name="last_conv")(x)
+    x = MaxPooling2D((2,2))(x)
+
+    x = Flatten()(x)
+
+    x = Dense(128, activation="relu")(x)
+
+    x = Dropout(0.5)(x)
+
+    outputs = Dense(10, activation="softmax")(x)
+
+    model = Model(inputs=inputs, outputs=outputs)
+
+    return model
+
+
+try:
+
+    model = build_model()
+
+    model.load_weights(WEIGHTS_PATH)
+
+    logging.info("CNN weights loaded successfully.")
+
+except Exception as e:
+
+    logging.exception("Unable to load CNN weights.")
+
+    raise
+
+#########################################################
+# Last Convolution Layer
+#########################################################
+
+LAST_CONV_LAYER = None
+
+for layer in reversed(model.layers):
+
+    if isinstance(layer, tf.keras.layers.Conv2D):
+
+        LAST_CONV_LAYER = "last_conv"
+
+        break
+
+logging.info(f"Last Conv Layer : {LAST_CONV_LAYER}")
+
+#########################################################
+# Build Model Before GradCAM
+#########################################################
+
+dummy = tf.zeros((1, 224, 224, 3))
+
+_ = model(dummy)
+
+#########################################################
+# Build GradCAM Model
+#########################################################
+
+grad_model = tf.keras.models.Model(
+
+   inputs=model.input,
+
+outputs=[
+
+    model.get_layer(LAST_CONV_LAYER).output,
+
+    model.outputs[0]
+
+]
+
+)
+
+def make_gradcam_heatmap(image):
+
+    with tf.GradientTape() as tape:
+
+        conv_outputs, predictions = grad_model(image)
+
+        class_index = tf.argmax(predictions[0])
+
+        loss = predictions[:, class_index]
+
+    gradients = tape.gradient(loss, conv_outputs)
+
+    pooled_gradients = tf.reduce_mean(
+        gradients,
+        axis=(0, 1, 2)
+    )
+
+    conv_outputs = conv_outputs[0]
+
+    heatmap = tf.reduce_sum(
+        conv_outputs * pooled_gradients,
+        axis=-1
+    )
+
+    heatmap = tf.maximum(heatmap, 0)
+
+    max_value = tf.reduce_max(heatmap)
+
+    if max_value > 0:
+        heatmap /= max_value
+
+    heatmap = heatmap.numpy()
+
+    # Smooth the heatmap
+    heatmap = cv2.GaussianBlur(heatmap, (7,7), 0)
+
+    return heatmap
+
+
+def overlay_heatmap(original_image, heatmap):
+
+    original = np.array(original_image.convert("RGB"))
+
+    heatmap = cv2.resize(
+        heatmap,
+        (original.shape[1], original.shape[0])
+    )
+
+    heatmap = np.uint8(255 * heatmap)
+
+    heatmap = cv2.applyColorMap(
+        heatmap,
+        cv2.COLORMAP_JET
+    )
+
+    overlay = cv2.addWeighted(
+        original,
+        0.65,
+        heatmap,
+        0.35,
+        0
+    )
+
+    return overlay
+
+def image_to_base64(image):
+
+    image = Image.fromarray(image)
+
+    buffer = io.BytesIO()
+
+    image.save(
+       buffer,
+       format="PNG",
+       optimize=True
+)
+
+    return base64.b64encode(
+
+        buffer.getvalue()
+
+    ).decode("utf-8")
+
+
+
+CLASS_NAMES = [
+
+    "Tomato_Bacterial_spot",
+
+    "Tomato_Early_blight",
+
+    "Tomato_Late_blight",
+
+    "Tomato_Leaf_Mold",
+
+    "Tomato_Septoria_leaf_spot",
+
+    "Tomato_Spider_mites_Two_spotted_spider_mite",
+
+    "Tomato_Target_Spot",
+
+    "Tomato_Tomato_YellowLeaf_Curl_Virus",
+
+    "Tomato_Tomato_mosaic_virus",
+
+    "Tomato_healthy"
+
+]
+
+RECOMMENDATIONS = {
+
+    "Tomato_Bacterial_spot":
+    "Remove infected leaves. Avoid overhead watering. Apply copper-based bactericide.",
+
+    "Tomato_Early_blight":
+    "Apply fungicide. Remove infected foliage. Rotate crops.",
+
+    "Tomato_Late_blight":
+    "Destroy infected plants immediately. Apply protective fungicide.",
+
+    "Tomato_Leaf_Mold":
+    "Improve ventilation. Reduce humidity inside greenhouse.",
+
+    "Tomato_Septoria_leaf_spot":
+    "Remove infected leaves. Apply fungicide regularly.",
+
+    "Tomato_Spider_mites_Two_spotted_spider_mite":
+    "Use miticide or insecticidal soap. Maintain proper humidity.",
+
+    "Tomato_Target_Spot":
+    "Apply fungicide. Improve air circulation.",
+
+    "Tomato_Tomato_YellowLeaf_Curl_Virus":
+    "Control whiteflies immediately. Remove infected plants.",
+
+    "Tomato_Tomato_mosaic_virus":
+    "Destroy infected plants and disinfect gardening tools.",
+
+    "Tomato_healthy":
+    "Plant appears healthy. Continue regular watering and monitoring."
+
+}
+
+def preprocess_image(image):
+
+    image = image.convert("RGB")
+
+    image = image.resize(IMAGE_SIZE)
+
+    image = img_to_array(image)
+
+    image = image.astype("float32") / 255.0
+
+    image = np.expand_dims(image, axis=0)
+
+    return image
+
+#########################################################
+# Tomato Leaf Validation
+#########################################################
+
+def validate_image(image):
+    try:
+        image = image.convert("RGB")
+
+        width, height = image.size
+
+        # Reject very small images
+        if width < 100 or height < 100:
+            return False, "Image resolution is too low."
+
+        processed = preprocess_image(image)
+
+        prediction = model.predict(processed, verbose=0)
+
+        probabilities = prediction[0]
+
+        logging.info("------------ Image Validation ------------")
+
+        for i, p in enumerate(probabilities):
+            logging.info(f"{CLASS_NAMES[i]} : {p*100:.2f}%")
+
+        logging.info("------------------------------------------")
+
+        # Highest probability
+        top1 = np.max(probabilities)
+
+        # Second highest probability
+        sorted_probs = np.sort(probabilities)
+        top2 = sorted_probs[-2]
+
+        ####################################################
+        # Image Validation
+        ####################################################
+
+        # Reject if prediction confidence is too low
+        if top1 < 0.50:
+            return False, "Please upload a valid tomato leaf image."
+
+        # Reject if the model is confused
+        if (top1 - top2) < 0.15:
+            return False, "Please upload a valid tomato leaf image."
+
+        return True, ""
+
+    except Exception:
+        return False, "Invalid image."
+
+
+def predict_disease(image):
+
+    processed = preprocess_image(image)
+
+    prediction = model.predict(processed,verbose=0)
+
+    probabilities = prediction[0].tolist()
+
+    confidence = float(np.max(prediction)*100)
+
+    index = np.argmax(prediction)
+
+    disease = CLASS_NAMES[index]
+
+    recommendation = RECOMMENDATIONS[disease]
+
+    heatmap = make_gradcam_heatmap(processed)
+
+    overlay = overlay_heatmap(image,heatmap)
+
+    gradcam_base64 = image_to_base64(overlay)
+
+    return{
+
+        "disease":disease,
+
+        "confidence":confidence,
+
+        "recommendation":recommendation,
+
+        "gradcam":gradcam_base64,
+
+        "probabilities": probabilities
+
+
+    }
+
+#########################################################
+# Validate Prediction
+#########################################################
+
+def is_invalid_prediction(confidence):
+
+    return confidence < CONFIDENCE_THRESHOLD
+
+#########################################################
+# Rule-Based XAI Explanation
+#########################################################
+
+def generate_xai(disease):
+
+    explanations = {
+
+        "Tomato_Bacterial_spot":[
+
+            "Grad-CAM highlights dark bacterial lesion regions.",
+
+            "The CNN focuses on infected leaf tissue.",
+
+            "Highlighted regions are consistent with bacterial spot."
+
+        ],
+
+        "Tomato_Early_blight":[
+
+            "Grad-CAM highlights brown necrotic lesions.",
+
+            "The CNN focuses on damaged tissue.",
+
+            "These regions indicate Early Blight."
+
+        ],
+
+        "Tomato_Late_blight":[
+
+            "Grad-CAM highlights irregular dark lesions.",
+
+            "The CNN focuses on infected tissue.",
+
+            "This pattern matches Late Blight."
+
+        ],
+
+        "Tomato_Leaf_Mold":[
+
+            "Grad-CAM highlights mold infected regions.",
+
+            "CNN focuses on fungal affected tissue.",
+
+            "These regions indicate Leaf Mold."
+
+        ],
+
+        "Tomato_Septoria_leaf_spot":[
+
+            "Grad-CAM highlights circular lesions.",
+
+            "CNN identifies infected tissue.",
+
+            "These symptoms match Septoria Leaf Spot."
+
+        ],
+
+        "Tomato_Spider_mites_Two_spotted_spider_mite":[
+
+            "Grad-CAM highlights damaged leaf tissue.",
+
+            "CNN focuses on mite feeding damage.",
+
+            "Highlighted regions indicate Spider Mites."
+
+        ],
+
+        "Tomato_Target_Spot":[
+
+            "Grad-CAM highlights target-like lesions.",
+
+            "CNN focuses on infected regions.",
+
+            "These symptoms indicate Target Spot."
+
+        ],
+
+        "Tomato_Tomato_YellowLeaf_Curl_Virus":[
+
+            "Grad-CAM highlights curled yellow regions.",
+
+            "CNN focuses on abnormal leaf deformation.",
+
+            "Highlighted regions indicate Yellow Leaf Curl Virus."
+
+        ],
+
+        "Tomato_Tomato_mosaic_virus":[
+
+            "Grad-CAM highlights mosaic discoloration.",
+
+            "CNN focuses on abnormal pigmentation.",
+
+            "These symptoms indicate Tomato Mosaic Virus."
+
+        ],
+
+        "Tomato_healthy":[
+
+            "Grad-CAM activation is evenly distributed.",
+
+            "No strong disease region detected.",
+
+            "Leaf characteristics appear healthy."
+
+        ]
+
+    }
+
+    return explanations[disease]
+
+#########################################################
+# Home
+#########################################################
+
+@app.route("/",methods=["GET"])
+
+def home():
+
+    return jsonify({
+
+         "application": APP_NAME,
+
+         "version": VERSION,
+
+         "author": AUTHOR,
+
+         "status": "Running"
+
+    })
+
+#########################################################
+# Health Check
+#########################################################
+
+@app.route("/health", methods=["GET"])
+def health():
+
+    return jsonify({
+
+        "status": "Healthy",
+
+        "model_loaded": model is not None,
+
+        "gradcam": LAST_CONV_LAYER,
+
+        "classes": len(CLASS_NAMES)
+
+    })
+
+#########################################################
+# Prediction API
+#########################################################
+
+@app.route("/predict", methods=["POST"])
+def predict():
+
+    try:
+
+        if "image" not in request.files:
+            return jsonify({
+                "error": "No image uploaded."
+            }), 400
+
+        image_file = request.files["image"]
+
+        logging.info(
+
+           f"Image Uploaded : {image_file.filename}"
+
+)
+
+        filename = image_file.filename.lower()
+
+        allowed = (".jpg", ".jpeg", ".png")
+
+        if not filename.endswith(allowed):
+            return jsonify({
+                "error": "Only JPG, JPEG and PNG images are allowed."
+            }), 400
+
+        try:
+            image = Image.open(image_file)
+
+        except Exception:
+            return jsonify({
+                "error": "Invalid image."
+            }), 400
+
+        valid, message = validate_image(image)
+
+        if not valid:
+            logging.warning(
+
+                "Invalid image uploaded."
+
+)
+            return jsonify({
+                "error": message
+            }), 400
+
+        result = predict_disease(image)
+
+        logging.info(
+
+           f"Prediction: "
+
+           f"{result['disease']} | "
+
+           f"{result['confidence']:.2f}%"
+
+)
+
+        confidence = result["confidence"]
+
+        return jsonify({
+
+            "disease": result["disease"],
+
+            "confidence": round(confidence, 2),
+
+            "recommendation": result["recommendation"],
+
+            "gradcam_base64": result["gradcam"],
+
+            "probabilities": result["probabilities"],
+
+            "xai": generate_xai(result["disease"])
+
+        })
+
+    except Exception as e:
+
+        logging.exception(
+
+          "Prediction Failed"
+
+)
+
+        return jsonify({
+
+            "error": str(e)
+
+        }), 500
+
+
+#########################################################
+# Run Flask
+#########################################################
+
+if __name__=="__main__":
+
+    logging.info("--------------------------------")
+
+    logging.info("PlantGuard Backend Started")
+ 
+    logging.info(f"Weights : {WEIGHTS_PATH}")
+
+    logging.info(f"GradCAM : {LAST_CONV_LAYER}")
+
+    logging.info("--------------------------------")
+
+    app.run(
+
+        host="0.0.0.0",
+
+        port=5000
+
+    )
+
