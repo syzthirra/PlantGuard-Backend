@@ -7,6 +7,13 @@ import numpy as np
 import matplotlib.cm as cm
 import imghdr
 
+import numpy as np
+from tensorflow.keras.applications.mobilenet_v2 import (
+    MobileNetV2,
+    preprocess_input,
+    decode_predictions
+)
+
 from PIL import Image
 
 from flask import Flask, request, jsonify
@@ -298,56 +305,7 @@ def preprocess_image(image):
 
     return image
 
-#########################################################
-# Tomato Leaf Validation
-#########################################################
 
-def validate_image(image):
-    try:
-        image = image.convert("RGB")
-
-        width, height = image.size
-
-        # Reject very small images
-        if width < 100 or height < 100:
-            return False, "Image resolution is too low."
-
-        processed = preprocess_image(image)
-
-        prediction = model.predict(processed, verbose=0)
-
-        probabilities = prediction[0]
-
-        logging.info("------------ Image Validation ------------")
-
-        for i, p in enumerate(probabilities):
-            logging.info(f"{CLASS_NAMES[i]} : {p*100:.2f}%")
-
-        logging.info("------------------------------------------")
-
-        # Highest probability
-        top1 = np.max(probabilities)
-
-        # Second highest probability
-        sorted_probs = np.sort(probabilities)
-        top2 = sorted_probs[-2]
-
-        ####################################################
-        # Image Validation
-        ####################################################
-
-        # Reject if prediction confidence is too low
-        if top1 < 0.50:
-            return False, "Please upload a valid tomato leaf image."
-
-        # Reject if the model is confused
-        if (top1 - top2) < 0.15:
-            return False, "Please upload a valid tomato leaf image."
-
-        return True, ""
-
-    except Exception:
-        return False, "Invalid image."
 
 
 def predict_disease(image):
@@ -387,13 +345,60 @@ def predict_disease(image):
 
     }
 
-#########################################################
-# Validate Prediction
-#########################################################
+leaf_validator = MobileNetV2(weights="imagenet")
 
-def is_invalid_prediction(confidence):
 
-    return confidence < CONFIDENCE_THRESHOLD
+def validate_leaf(image):
+    """
+    Returns True if the uploaded image is likely a plant/leaf.
+    """
+
+    img = image.resize((224, 224))
+
+    img = np.array(img)
+
+    img = preprocess_input(img.astype(np.float32))
+
+    img = np.expand_dims(img, axis=0)
+
+    predictions = leaf_validator.predict(img, verbose=0)
+
+    decoded = decode_predictions(predictions, top=5)[0]
+
+    print("MobileNet predictions:")
+    for item in decoded:
+        print(item)
+
+    keywords = [
+         "leaf",
+         "plant",
+         "tomato",
+         "vegetable",
+         "tree",
+         "flower",
+         "vine",
+         "corn",
+         "maize",
+         "cabbage",
+         "broccoli",
+         "cauliflower",
+         "fungus",
+         "mushroom"
+    ]
+
+    for _, label, confidence in decoded:
+
+        label = label.lower()
+
+        for keyword in keywords:
+
+            if keyword in label:
+                print("Valid plant image detected.")
+                return True
+
+    print("Invalid image detected.")
+    return False
+
 
 #########################################################
 # Rule-Based XAI Explanation
@@ -550,11 +555,16 @@ def health():
 # Prediction API
 #########################################################
 
+#########################################################
+# Prediction API
+#########################################################
+
 @app.route("/predict", methods=["POST"])
 def predict():
 
     try:
 
+        # Check uploaded image
         if "image" not in request.files:
             return jsonify({
                 "error": "No image uploaded."
@@ -562,14 +572,10 @@ def predict():
 
         image_file = request.files["image"]
 
-        logging.info(
+        logging.info(f"Image Uploaded: {image_file.filename}")
 
-           f"Image Uploaded : {image_file.filename}"
-
-)
-
+        # Check file extension
         filename = image_file.filename.lower()
-
         allowed = (".jpg", ".jpeg", ".png")
 
         if not filename.endswith(allowed):
@@ -577,45 +583,39 @@ def predict():
                 "error": "Only JPG, JPEG and PNG images are allowed."
             }), 400
 
-        try:
-            image = Image.open(image_file)
+        # Read image
+        image = Image.open(image_file).convert("RGB")
 
-        except Exception:
+        ####################################################
+        # MobileNetV2 Validation
+        ####################################################
+
+        if not validate_leaf(image):
+
+            logging.warning("Invalid image detected by MobileNetV2.")
+
+
             return jsonify({
-                "error": "Invalid image."
+               "status": "invalid_image",
+               "error": "Please upload a valid tomato leaf image."
             }), 400
 
-        valid, message = validate_image(image)
-
-        if not valid:
-            logging.warning(
-
-                "Invalid image uploaded."
-
-)
-            return jsonify({
-                "error": message
-            }), 400
+        ####################################################
+        # Disease Prediction
+        ####################################################
 
         result = predict_disease(image)
 
         logging.info(
-
-           f"Prediction: "
-
-           f"{result['disease']} | "
-
-           f"{result['confidence']:.2f}%"
-
-)
-
-        confidence = result["confidence"]
+            f"Prediction: {result['disease']} | "
+            f"{result['confidence']:.2f}%"
+        )
 
         return jsonify({
 
             "disease": result["disease"],
 
-            "confidence": round(confidence, 2),
+            "confidence": round(result["confidence"], 2),
 
             "recommendation": result["recommendation"],
 
@@ -629,18 +629,13 @@ def predict():
 
     except Exception as e:
 
-        logging.exception(
-
-          "Prediction Failed"
-
-)
+        logging.exception("Prediction Failed")
 
         return jsonify({
 
             "error": str(e)
 
         }), 500
-
 
 #########################################################
 # Run Flask
