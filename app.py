@@ -3,12 +3,16 @@ import io
 import cv2
 import base64
 import logging
-import numpy as np
 import matplotlib.cm as cm
 import imghdr
-
+import gc
 import numpy as np
 
+from tensorflow.keras.applications.mobilenet_v2 import (
+    MobileNetV2,
+    preprocess_input,
+    decode_predictions
+)
 from PIL import Image
 
 from flask import Flask, request, jsonify
@@ -101,6 +105,10 @@ except Exception as e:
 
     raise
 
+leaf_validator = MobileNetV2(
+    weights="imagenet",
+    include_top=True
+)
 #########################################################
 # Last Convolution Layer
 #########################################################
@@ -325,6 +333,12 @@ def predict_disease(image):
 
     gradcam_base64 = image_to_base64(overlay)
 
+    del processed
+    del prediction
+    del heatmap
+    del overlay
+    gc.collect()
+
     return{
 
         "disease":disease,
@@ -344,43 +358,66 @@ def predict_disease(image):
 
 def validate_leaf(image):
     """
-    Lightweight validation without TensorFlow.
-    Returns True if the image appears to contain vegetation.
+    Validate whether the uploaded image is likely to be a leaf/plant image.
+    Returns True if valid, otherwise False.
     """
 
-    img = image.resize((224, 224))
+    try:
+        # Resize image
+        img = image.resize((224, 224))
 
-    img = np.array(img)
+        # Convert to numpy
+        img_array = np.array(img)
 
-    # Reject grayscale images
-    if len(img.shape) != 3 or img.shape[2] != 3:
-        print("Invalid image (not RGB).")
+        # Remove alpha channel if present
+        if img_array.shape[-1] == 4:
+            img_array = img_array[:, :, :3]
+
+        # Expand dimensions
+        img_array = np.expand_dims(img_array.astype(np.float32), axis=0)
+
+        # MobileNet preprocessing
+        img_array = preprocess_input(img_array)
+
+        # Predict
+        predictions = leaf_validator.predict(img_array, verbose=0)
+
+        # Decode top prediction
+        decoded = decode_predictions(predictions, top=1)[0]
+
+        label = decoded[0][1].lower()
+        confidence = decoded[0][2]
+
+        print(f"[MobileNet] Prediction: {label}")
+        print(f"[MobileNet] Confidence: {confidence:.2f}")
+
+        keywords = [
+            "leaf",
+            "plant",
+            "tomato",
+            "tree",
+            "vine",
+            "vegetable",
+            "cabbage",
+            "broccoli",
+            "cauliflower"
+        ]
+
+        is_leaf = any(keyword in label for keyword in keywords)
+
+        del predictions
+        gc.collect()
+
+        if is_leaf:
+            print("Valid leaf image.")
+        else:
+            print("Invalid image.")
+
+        return is_leaf
+
+    except Exception as e:
+        print("Validation Error:", e)
         return False
-
-    r = img[:, :, 0]
-    g = img[:, :, 1]
-    b = img[:, :, 2]
-
-    # Count green pixels
-    green_pixels = (
-        (g > r + 20) &
-        (g > b + 20) &
-        (g > 60)
-    )
-
-    green_ratio = np.sum(green_pixels) / (224 * 224)
-
-    print(f"Green Ratio: {green_ratio:.2f}")
-
-    # Require at least 15% green pixels
-    if green_ratio > 0.15:
-        print("Valid leaf image.")
-        return True
-
-    print("Invalid image.")
-    return False
-
-
 
 
 
@@ -594,6 +631,12 @@ def predict():
             f"Prediction: {result['disease']} | "
             f"{result['confidence']:.2f}%"
         )
+        
+        del processed
+        del prediction
+        del heatmap
+        del overlay
+        gc.collect()
 
         return jsonify({
 
