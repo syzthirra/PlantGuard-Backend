@@ -349,7 +349,6 @@ def validate_leaf(image):
     Validate whether the uploaded image is likely to be a tomato leaf.
     MobileNet is loaded only when needed to reduce startup memory.
     """
-
     try:
         from tensorflow.keras.applications.mobilenet_v2 import (
             MobileNetV2,
@@ -372,7 +371,6 @@ def validate_leaf(image):
             img_array.astype(np.float32),
             axis=0
         )
-
         img_array = preprocess_input(img_array)
 
         predictions = leaf_validator.predict(
@@ -380,12 +378,11 @@ def validate_leaf(image):
             verbose=0
         )
 
+        # Check top 5 predictions instead of just the top 1
         decoded = decode_predictions(
             predictions,
-            top=1
+            top=5
         )[0]
-
-        label = decoded[0][1].lower()
 
         keywords = [
             "leaf",
@@ -396,17 +393,22 @@ def validate_leaf(image):
             "vegetable",
             "cabbage",
             "broccoli",
-            "cauliflower"
+            "cauliflower",
+            "corn",
+            "pot",
+            "herb",
+            "flower"
         ]
 
+        # is_leaf is True if ANY of the top 5 labels match a keyword
         is_leaf = any(
-            keyword in label
+            keyword in label.lower()
+            for (_, label, _) in decoded
             for keyword in keywords
         )
 
         del predictions
         del leaf_validator
-
         gc.collect()
 
         return is_leaf
