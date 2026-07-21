@@ -8,11 +8,6 @@ import matplotlib.cm as cm
 import imghdr
 
 import numpy as np
-from tensorflow.keras.applications.mobilenet_v2 import (
-    MobileNetV2,
-    preprocess_input,
-    decode_predictions
-)
 
 from PIL import Image
 
@@ -345,59 +340,48 @@ def predict_disease(image):
 
     }
 
-leaf_validator = MobileNetV2(weights="imagenet")
 
 
 def validate_leaf(image):
     """
-    Returns True if the uploaded image is likely a plant/leaf.
+    Lightweight validation without TensorFlow.
+    Returns True if the image appears to contain vegetation.
     """
 
     img = image.resize((224, 224))
 
     img = np.array(img)
 
-    img = preprocess_input(img.astype(np.float32))
+    # Reject grayscale images
+    if len(img.shape) != 3 or img.shape[2] != 3:
+        print("Invalid image (not RGB).")
+        return False
 
-    img = np.expand_dims(img, axis=0)
+    r = img[:, :, 0]
+    g = img[:, :, 1]
+    b = img[:, :, 2]
 
-    predictions = leaf_validator.predict(img, verbose=0)
+    # Count green pixels
+    green_pixels = (
+        (g > r + 20) &
+        (g > b + 20) &
+        (g > 60)
+    )
 
-    decoded = decode_predictions(predictions, top=5)[0]
+    green_ratio = np.sum(green_pixels) / (224 * 224)
 
-    print("MobileNet predictions:")
-    for item in decoded:
-        print(item)
+    print(f"Green Ratio: {green_ratio:.2f}")
 
-    keywords = [
-         "leaf",
-         "plant",
-         "tomato",
-         "vegetable",
-         "tree",
-         "flower",
-         "vine",
-         "corn",
-         "maize",
-         "cabbage",
-         "broccoli",
-         "cauliflower",
-         "fungus",
-         "mushroom"
-    ]
+    # Require at least 15% green pixels
+    if green_ratio > 0.15:
+        print("Valid leaf image.")
+        return True
 
-    for _, label, confidence in decoded:
-
-        label = label.lower()
-
-        for keyword in keywords:
-
-            if keyword in label:
-                print("Valid plant image detected.")
-                return True
-
-    print("Invalid image detected.")
+    print("Invalid image.")
     return False
+
+
+
 
 
 #########################################################
