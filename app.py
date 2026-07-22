@@ -49,11 +49,6 @@ APP_NAME = "PlantGuard"
 VERSION = "1.0.0"
 AUTHOR = "Syaza Athirah Sanusi"
 
-# Minimum confidence (%) required for a prediction to be trusted.
-# Below this, the image is treated as "not a recognizable tomato leaf"
-# UNLESS the MobileNetV2 keyword check below says otherwise.
-CONFIDENCE_THRESHOLD = 40.0
-
 #########################################################
 # Build CNN Model
 #########################################################
@@ -250,12 +245,14 @@ def predict_disease(image):
 
 def validate_leaf(image):
     """
-    Secondary check using a generic MobileNetV2 (ImageNet) classifier
-    to catch obvious non-leaf images (e.g. faces, objects, animals)
-    that might otherwise slip through on low CNN confidence.
+    Validate whether the uploaded image is likely to be a tomato leaf.
+    MobileNet is loaded only when needed to reduce startup memory.
 
-    This is used ALONGSIDE the CNN's own confidence score, not
-    instead of it - see combined logic in /predict.
+    NOTE: this is the broader keyword version (no confidence floor
+    per label). It is more forgiving of real leaf photos (including
+    diseased ones) but WILL also accept some non-leaf green/textured
+    images (e.g. grass, certain animals on foliage) since those can
+    trigger loosely-related ImageNet labels like "vine" or "plant".
     """
     try:
         leaf_validator = MobileNetV2(
@@ -280,15 +277,22 @@ def validate_leaf(image):
 
         keywords = [
             "leaf",
+            "plant",
             "tomato",
+            "tree",
+            "vine",
+            "vegetable",
             "cabbage",
             "broccoli",
             "cauliflower",
-            "corn"
+            "corn",
+            "pot",
+            "herb",
+            "flower"
         ]
         is_leaf = any(
-            keyword in label.lower() and confidence > 0.10
-            for (_, label, confidence) in decoded
+            keyword in label.lower()
+            for (_, label, _) in decoded
             for keyword in keywords
         )
         del predictions
@@ -412,36 +416,22 @@ def predict():
         image = Image.open(image_file).convert("RGB")
 
         ####################################################
-        # Disease Prediction
+        # MobileNetV2 Validation
         ####################################################
-        result = predict_disease(image)
-
-        ####################################################
-        # Combined Validation:
-        # Accept if EITHER check passes -
-        #   1) CNN's own confidence is high enough, OR
-        #   2) MobileNetV2 keyword check recognizes leaf-like labels
-        # This avoids rejecting real (but low-confidence or diseased-
-        # looking) leaves while still catching obviously wrong images.
-        ####################################################
-        confidence_check_passed = result["confidence"] >= CONFIDENCE_THRESHOLD
-        keyword_check_passed = validate_leaf(image)
-
-        if not (confidence_check_passed or keyword_check_passed):
-            logging.warning(
-                f"Rejected — confidence={result['confidence']:.2f}%, "
-                f"keyword_check_passed={keyword_check_passed}"
-            )
+        if not validate_leaf(image):
+            logging.warning("Invalid image detected by MobileNetV2.")
             return jsonify({
                 "status": "invalid_image",
                 "error": "Please upload a valid tomato leaf image."
             }), 400
 
+        ####################################################
+        # Disease Prediction
+        ####################################################
+        result = predict_disease(image)
         logging.info(
             f"Prediction: {result['disease']} | "
-            f"{result['confidence']:.2f}% | "
-            f"confidence_check={confidence_check_passed} | "
-            f"keyword_check={keyword_check_passed}"
+            f"{result['confidence']:.2f}%"
         )
 
         tf.keras.backend.clear_session()
@@ -470,4 +460,3 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
