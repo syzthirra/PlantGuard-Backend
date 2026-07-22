@@ -378,7 +378,7 @@ def validate_leaf(image):
             verbose=0
         )
 
-decoded = decode_predictions(predictions, top=5)[0]
+        decoded = decode_predictions(predictions, top=5)[0]
 
         keywords = [
             "leaf",
@@ -394,6 +394,7 @@ decoded = decode_predictions(predictions, top=5)[0]
             for (_, label, confidence) in decoded
             for keyword in keywords
         )
+
         del predictions
         del leaf_validator
         gc.collect()
@@ -403,7 +404,6 @@ decoded = decode_predictions(predictions, top=5)[0]
     except Exception as e:
         print("Validation Error:", e)
         return False
-
 
 
 
