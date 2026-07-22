@@ -379,6 +379,10 @@ def validate_leaf(image):
         )
 
         decoded = decode_predictions(predictions, top=5)[0]
+        
+        decoded = decode_predictions(predictions, top=5)[0]
+        logging.info(f"Leaf validation predictions: {decoded}")  # ADD THIS LINE
+
 
         keywords = [
             "leaf",
