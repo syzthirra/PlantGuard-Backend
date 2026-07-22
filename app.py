@@ -617,24 +617,18 @@ def predict():
         image = Image.open(image_file).convert("RGB")
 
         ####################################################
-        # MobileNetV2 Validation
+        # Disease Prediction with Confidence-Based Validation
         ####################################################
-
-        if not validate_leaf(image):
-
-            logging.warning("Invalid image detected by MobileNetV2.")
-
-
-            return jsonify({
-               "status": "invalid_image",
-               "error": "Please upload a valid tomato leaf image."
-            }), 400
-
-        ####################################################
-        # Disease Prediction
-        ####################################################
-
         result = predict_disease(image)
+
+        CONFIDENCE_THRESHOLD = 40.0  # tune this based on testing
+
+        if result["confidence"] < CONFIDENCE_THRESHOLD:
+            logging.warning(f"Low confidence prediction ({result['confidence']:.2f}%) — likely not a tomato leaf.")
+            return jsonify({
+                "status": "invalid_image",
+                "error": "Please upload a valid tomato leaf image."
+            }), 400
 
         logging.info(
             f"Prediction: {result['disease']} | "
