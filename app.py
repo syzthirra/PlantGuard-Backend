@@ -344,6 +344,19 @@ def predict_disease(image):
     }
 
 
+def is_greenish(image, threshold=0.25):
+    """
+    Simple heuristic: check if a meaningful portion of the image
+    is green-toned, which most leaf photos are, even when a
+    generic ImageNet classifier misreads the texture.
+    """
+    img_array = np.array(image.convert("RGB")).astype(np.float32)
+    r, g, b = img_array[:,:,0], img_array[:,:,1], img_array[:,:,2]
+    green_mask = (g > r) & (g > b * 0.9) & (g > 40)
+    green_ratio = np.mean(green_mask)
+    return green_ratio > threshold
+
+
 def validate_leaf(image):
     """
     Validate whether the uploaded image is likely to be a tomato leaf.
@@ -379,10 +392,7 @@ def validate_leaf(image):
         )
 
         decoded = decode_predictions(predictions, top=5)[0]
-        
-        decoded = decode_predictions(predictions, top=5)[0]
-        logging.info(f"Leaf validation predictions: {decoded}")  # ADD THIS LINE
-
+        logging.info(f"Leaf validation predictions: {decoded}")
 
         keywords = [
             "leaf",
@@ -393,10 +403,18 @@ def validate_leaf(image):
             "corn"
         ]
 
-        is_leaf = any(
-            keyword in label.lower() and confidence > 0.10
+        is_leaf_keyword = any(
+            keyword in label.lower() and confidence > 0.03
             for (_, label, confidence) in decoded
             for keyword in keywords
+        )
+
+        is_leaf_color = is_greenish(image)
+
+        is_leaf = is_leaf_keyword or is_leaf_color
+
+        logging.info(
+            f"is_leaf_keyword={is_leaf_keyword}, is_leaf_color={is_leaf_color}, final={is_leaf}"
         )
 
         del predictions
@@ -408,7 +426,6 @@ def validate_leaf(image):
     except Exception as e:
         print("Validation Error:", e)
         return False
-
 
 
 
